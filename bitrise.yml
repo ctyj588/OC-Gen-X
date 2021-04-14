@@ -1,0 +1,76 @@
+format_version: "8"
+default_step_lib_source: https://github.com/bitrise-io/bitrise-steplib.git
+project_type: macos
+app:
+  envs:
+  - BITRISE_PROJECT_PATH: OC_Gen-X.xcodeproj
+  - BITRISE_SCHEME: OC_Gen-X
+  - BITRISE_EXPORT_METHOD: development
+trigger_map:
+- push_branch: '*'
+  workflow: primary
+- pull_request_source_branch: '*'
+  workflow: primary
+workflows:
+  primary:
+    steps:
+    - activate-ssh-key@4:
+        run_if: '{{getenv "SSH_RSA_PRIVATE_KEY" | ne ""}}'
+    - git-clone@5: {}
+    - cache-pull@2: {}
+    - certificate-and-profile-installer@1: {}
+    - script@1:
+        title: Do anything with Script step
+        inputs:
+        - content: |-
+            #!/bin/bash
+
+            # ---- Generate Sparkle EdDSA key:
+             APPCAST_KEY=$($BITRISE_SOURCE_DIR/Support_Files/generate_keys -p)
+
+            # ---- Set the SUPublicEDKey to the generated EdDSA key:
+            /usr/libexec/PlistBuddy -c "Set SUPublicEDKey $APPCAST_KEY" $BITRISE_SOURCE_DIR/OC_Gen-X/Info.plist
+
+            # ---- Get Current Bundle Version:
+            build_version="$(/usr/libexec/PlistBuddy -c "Print CFBundleVersion" $BITRISE_SOURCE_DIR/OC_Gen-X/Info.plist)"
+            short_bundle_version=`sed -n '/MARKETING_VERSION/{s/MARKETING_VERSION = //;s/;//;s/^[[:space:]]*//;p;q;}' OC_Gen-X.xcodeproj/project.pbxproj`
+            CONFIG_build_version=${build_version}
+            CONFIG_short_bundle_version=${short_bundle_version}
+
+            # ---- Set Build And Bundle Version ENV:
+            envman add --key "CURRENT_BUILD_VERSION" --value "${CONFIG_build_version}"
+            envman add --key "CURRENT_SHORT_BUNDLE_VERSION" --value "${CONFIG_short_bundle_version}"
+    - set-xcode-build-number@1:
+        inputs:
+        - build_version: $CURRENT_SHORT_BUNDLE_VERSION
+        - plist_path: $BITRISE_SOURCE_DIR/OC_Gen-X/Info.plist
+    - xcode-archive-mac@1: {}
+    - script@1:
+        inputs:
+        - content: |-
+            #!/bin/bash
+
+            # ---- Remove Sparkle_generate_appcast cache:
+            rm -rf $BITRISE_DEPLOY_DIR/OC_Gen-X.dSYM.zip
+            rm -rf $BITRISE_DEPLOY_DIR/export_options.plist
+
+            # ---- Generate Sparkle appacast.xml:
+            $BITRISE_SOURCE_DIR/Support_Files/generate_appcast $BITRISE_DEPLOY_DIR
+    - deploy-to-bitrise-io@1: {}
+    - cache-push@2: {}
+    - generate-changelog@0.9:
+        inputs:
+        - new_version: 'new_version: $BITRISE_GIT_TAG'
+    - github-release@0:
+        inputs:
+        - username: $GITHUB_USER
+        - repository_url: https://github.com/Pavo-IM/OC-Gen-X.git
+        - tag: $CURRENT_SHORT_BUNDLE_VERSION
+        - body: $BITRISE_CHANGELOG
+        - commit: master
+        - name: $CURRENT_SHORT_BUNDLE_VERSION
+        - draft: "no"
+        - files_to_upload: |-
+            $BITRISE_EXPORTED_FILE_PATH
+            $BITRISE_DEPLOY_DIR/appcast.xml
+        - api_token: $GITHUB_ACCESS_KEY
